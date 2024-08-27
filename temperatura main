@@ -1,1 +1,179 @@
-hfhfh
+#include <Arduino.h>
+#include "config.h" // Incluye tu configuración de Adafruit IO
+#include "driver/ledc.h"
+
+//Definimos lo necesario para ejecutar ADAFRUIT
+//Definimos lo necesario para ejecutar ADAFRUIT
+AdafruitIO_Feed *termometro = io.feed("temperatura"); 
+
+// Configuración de pines
+#define tempPin 34       // Pin del sensor de temperatura LM35
+#define botonPin 13      // Pin del botón
+#define ledVerde 12       // Pin del LED verde
+#define ledAmarillo 4   // Pin del LED amarillo
+#define ledRojo 15       // Pin del LED rojo
+#define servoPin 2       // Pin del servo motor
+
+// Configuración de pines para display de 7 segmentos
+const int displayPins[] = {33, 32, 21, 18, 5, 25, 22}; // Pines para segmentos A-G
+const int digitPins[] = {14, 27, 26}; // Pines para cada dígito del display
+#define p 19
+
+// Canales PWM
+#define pwmChannelVerde 6
+#define pwmChannelAmarillo 7
+#define pwmChannelRojo 8
+#define pwmChannelServo 9
+
+float temperatura = 0.0;
+
+// Variables para antirrebote
+unsigned long lastDebounceTime = 0;  // Tiempo del último cambio de estado
+unsigned long debounceDelay = 50;    // Tiempo de retardo para el antirrebote (en milisegundos)
+int lastButtonState = HIGH;          // Estado previo del botón
+int buttonState = HIGH;              // Estado actual del botón
+
+// Definición de funciones
+void mostrarNumero(float num);
+void mostrarDigito(int numero, int digitoIndex);
+
+void setup() {
+  Serial.begin(115200);
+     // Iniciamos comunicación serial 
+  while(! Serial);
+  Serial.print("Connecting to Adafruit IO");
+  // connect to io.adafruit.com
+  io.connect();
+   while(io.status() < AIO_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  // Vemos si nos conectamos 
+  Serial.println();
+  Serial.println(io.statusText());
+  // Configuración de pines
+  pinMode(tempPin, INPUT);
+  pinMode(botonPin, INPUT_PULLUP);
+  for (int i = 0; i < 7; i++) {
+    pinMode(displayPins[i], OUTPUT);
+  }
+  for (int i = 0; i < 3; i++) {
+    pinMode(digitPins[i], OUTPUT);
+  }
+
+  pinMode(p, LOW);
+
+  // Configuración de los canales PWM
+  ledcSetup(pwmChannelVerde, 50, 10);
+  ledcSetup(pwmChannelAmarillo, 50, 10);
+  ledcSetup(pwmChannelRojo, 50, 10);
+  ledcSetup(pwmChannelServo, 50, 10);
+
+  ledcAttachPin(ledVerde, pwmChannelVerde);
+  ledcAttachPin(ledAmarillo, pwmChannelAmarillo);
+  ledcAttachPin(ledRojo, pwmChannelRojo);
+  ledcAttachPin(servoPin, pwmChannelServo);
+}
+
+void loop() {
+    float valorADC = analogRead(tempPin);
+    temperatura = map(valorADC, 0, 4095, 30, 40);
+//quitar // y poner // para potenciometro
+    //float voltage = valorADC * (3.3 / 4095.0); // Para el ESP32, la referencia de voltaje es 3.3V y el ADC es de 12 bits
+    //float temperatura = voltage * 100.0;
+    
+    Serial.print("Temperatura: ");
+    Serial.print(temperatura);
+    Serial.println(" °C");
+
+    // Antirrebote
+    int reading = digitalRead(botonPin);
+
+    if (reading != lastButtonState) {
+        lastDebounceTime = millis();  // Si el estado ha cambiado, reinicia el temporizador de debounce
+    }
+
+    if ((millis() - lastDebounceTime) > debounceDelay) {
+        if (reading != buttonState) {
+            buttonState = reading;
+            if (buttonState == LOW) {
+              io.run();
+                // Control de LEDs basado en la temperatura
+                if (temperatura < 33.0) {
+                    ledcWrite(pwmChannelVerde, 1023);   // LED Verde encendido
+                    ledcWrite(pwmChannelAmarillo, 0);   // LED Amarillo apagado
+                    ledcWrite(pwmChannelRojo, 0);       // LED Rojo apagado
+                    ledcWrite(pwmChannelServo, 100);     // Servo en posición 1
+                } else if (temperatura >= 33.0 && temperatura <= 35) {
+                    ledcWrite(pwmChannelVerde, 0);      // LED Verde apagado
+                    ledcWrite(pwmChannelAmarillo, 1023);// LED Amarillo encendido
+                    ledcWrite(pwmChannelRojo, 0);       // LED Rojo apagado
+                    ledcWrite(pwmChannelServo, 80);     // Servo en posición 2
+                } else {
+                    ledcWrite(pwmChannelVerde, 0);      // LED Verde apagado
+                    ledcWrite(pwmChannelAmarillo, 0);   // LED Amarillo apagado
+                    ledcWrite(pwmChannelRojo, 1023);    // LED Rojo encendido
+                    ledcWrite(pwmChannelServo, 53);    // Servo en posición 3
+                }
+                termometro ->save(temperatura);
+            }
+        }
+    }
+
+    // Guardar el estado del botón para la siguiente iteración
+    lastButtonState = reading;
+
+    // Mostrar temperatura en el display de 7 segmentos
+    mostrarNumero(temperatura);
+}
+
+// Funciones para mostrar en display de 7 segmentos
+void mostrarNumero(float num) {
+    int parteEntera = int(num);   
+    int unidades = parteEntera % 10;
+    int decenas = (parteEntera / 10) % 10;
+    int centenas = parteEntera / 100;
+
+    // Mostrar cada dígito
+    mostrarDigito(centenas, 2);
+    delay(5);
+    mostrarDigito(decenas, 0);
+    delay(5);
+    mostrarDigito(unidades, 1);
+    delay(5);
+}
+
+void mostrarDigito(int numero, int digitoIndex) {
+  // Definir el patrón de encendido de los segmentos del display para cada número
+  byte segmentos[10][7] = {
+      {1, 1, 1, 1, 1, 1, 0}, // 0
+      {0, 1, 1, 0, 0, 0, 0}, // 1
+      {1, 1, 0, 1, 1, 0, 1}, // 2
+      {1, 1, 1, 1, 0, 0, 1}, // 3
+      {0, 1, 1, 0, 0, 1, 1}, // 4
+      {1, 0, 1, 1, 0, 1, 1}, // 5
+      {1, 0, 1, 1, 1, 1, 1}, // 6
+      {1, 1, 1, 0, 0, 0, 0}, // 7
+      {1, 1, 1, 1, 1, 1, 1}, // 8
+      {1, 1, 1, 1, 0, 1, 1}, // 9
+  };
+
+  // Apagar todos los dígitos antes de encender uno
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(digitPins[i], LOW);
+  }
+
+  // Encender el dígito correspondiente
+  digitalWrite(digitPins[digitoIndex], HIGH);
+
+  // Encender los segmentos correspondientes al número
+  for (int i = 0; i < 7; i++) {
+    digitalWrite(displayPins[i], segmentos[numero][i]);
+  }
+
+  // Mantener el dígito encendido por un pequeño tiempo
+  delay(1);
+
+  // Apagar el dígito después de mostrarlo
+  digitalWrite(digitPins[digitoIndex], LOW);
+}
